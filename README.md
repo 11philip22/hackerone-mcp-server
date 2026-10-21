@@ -52,6 +52,8 @@ npm install
 npm run build
 ```
 
+Run `npm test` to build and run the fixture tests. Tests use Node's experimental module mocking and require Node.js 22.3+ (or 20.18+ on the Node 20 release line).
+
 To use your local build, set the MCP command to `node` and its arguments to `["/absolute/path/to/hackerone-mcp-server/dist/index.js"]`, keeping the same environment variables.
 
 ## Tools
@@ -67,6 +69,7 @@ To use your local build, set the MCP command to `node` and its arguments to `["/
 | `list_programs` | List all bug bounty programs you have access to (auto-paginates) |
 | `get_program_details` | Get single program info: policy, response times, metrics |
 | `get_program_signal_requirements` | Get a public program's minimum past-year signal threshold and whether requirements are enabled |
+| `get_program_rewards` | Get a public program's currency, severity payout ranges, reward groups, and each group's scope assets |
 | `get_program_scope` | Get all in-scope assets for a program (auto-paginates) |
 | `get_program_weaknesses` | Get accepted CWE/weakness types for a program (auto-paginates) |
 | `get_earnings` | Get your bounty earnings history (amounts, dates, programs) |
@@ -123,6 +126,11 @@ Show my hacker profile — what's my current reputation and signal?
 **Check a program's signal requirement:**
 ```
 What signal do I need to submit reports to the uber program?
+```
+
+**Compare rewards by asset group:**
+```
+Show TikTok's reward groups, severity payout ranges, and which Android apps and websites belong to each group. Flag any unavailable data.
 ```
 
 **Track earnings:**

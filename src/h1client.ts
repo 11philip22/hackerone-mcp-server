@@ -566,6 +566,287 @@ export async function getProgramSignalRequirements(handle: string) {
   return result;
 }
 
+type RewardAvailability = "available" | "partial" | "unavailable";
+type RewardSeverity = "low" | "medium" | "high" | "critical";
+
+interface RewardAsset {
+  id: string;
+  asset_identifier: string;
+  asset_type: string | null;
+  eligible_for_submission: boolean | null;
+  eligible_for_bounty: boolean | null;
+}
+
+interface RewardGroup {
+  id: string;
+  name: string | null;
+  description: string | null;
+  scope_kind: "all_assets" | "asset" | "reward_group" | null;
+  use_range: boolean | null;
+  rewards: Record<RewardSeverity, {
+    label: string | null;
+    minimum: number | null;
+    maximum: number | null;
+  }>;
+  assets: RewardAsset[] | null;
+  assets_availability: RewardAvailability;
+}
+
+export interface ProgramRewards {
+  handle: string;
+  currency: string | null;
+  source: string;
+  program_url: string;
+  format: "legacy" | "scope_and_rewards" | null;
+  description: string | null;
+  availability: RewardAvailability;
+  issues: { code: string; group_id: string | null; message: string }[];
+  groups: RewardGroup[] | null;
+}
+
+// ── Get public program rewards ───────────────────────────────────
+export async function getProgramRewards(handle: string): Promise<ProgramRewards> {
+  handle = handle.trim();
+  if (!handle) throw new Error("program_handle must not be empty");
+  const cacheKey = `program-rewards:${handle}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  // shortcut: uses the public website API; switch when the Hacker API exposes reward groups.
+  const result: ProgramRewards = {
+    handle, currency: null, source: "https://hackerone.com/graphql",
+    program_url: `https://hackerone.com/${encodeURIComponent(handle)}`,
+    format: null, description: null, availability: "unavailable", issues: [], groups: null,
+  };
+  const issue = (code: string, message: string, group_id: string | null = null) => {
+    result.issues.push({ code, group_id, message });
+  };
+  const request = async (query: string, variables: Record<string, unknown> = {}) => {
+    const res = await fetch(result.source, {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(15_000),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ query, variables: { handle, ...variables } }),
+    });
+    if (!res.ok) throw new Error(`HackerOne GraphQL HTTP error ${res.status}`);
+    const body: any = await res.json();
+    if (body?.errors !== undefined && (!Array.isArray(body.errors) || body.errors.length)) {
+      if (body.data?.team === null && Array.isArray(body.errors) &&
+          body.errors.length && body.errors.every((e: any) => e?.type === "NOT_FOUND")) return null;
+      throw new Error("HackerOne GraphQL returned errors");
+    }
+    const team = body?.data?.team;
+    if (team !== null && !isObject(team)) throw new Error("Malformed HackerOne team response");
+    return team;
+  };
+  const scopeFields = `_id asset_identifier asset_type eligible_for_submission eligible_for_bounty`;
+  const rewardsQuery = `query ProgramRewards($handle: String!, $after: String) {
+    team(handle: $handle) {
+      handle currency scope_and_rewards_groups_enabled
+      bounty_table {
+        _id description low_label medium_label high_label critical_label
+        bounty_table_rows(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          edges { node {
+            _id name description use_range
+            low low_minimum medium medium_minimum high high_minimum critical critical_minimum
+            structured_scope { ${scopeFields} }
+          } }
+        }
+      }
+    }
+  }`;
+  const rows = new Map<string, any>();
+  const groups: RewardGroup[] = [];
+  const nextCursor = (connection: any, seen: Set<string>): string | null => {
+    const info = connection?.pageInfo;
+    if (!isObject(info) || typeof info.hasNextPage !== "boolean") {
+      throw new Error("Missing reward pagination metadata");
+    }
+    if (!connection.edges.length && seen.size) throw new Error("Prematurely empty reward page");
+    if (!info.hasNextPage) return null;
+    if (!connection.edges.length || typeof info.endCursor !== "string" ||
+        !info.endCursor || seen.has(info.endCursor)) {
+      throw new Error("Incomplete or repeated reward pagination cursor");
+    }
+    seen.add(info.endCursor);
+    return info.endCursor;
+  };
+  const nodes = (connection: any): any[] => {
+    if (!isObject(connection) || !Array.isArray(connection.edges) ||
+        connection.edges.some((e: any) => !isObject(e?.node))) {
+      throw new Error("Malformed reward connection");
+    }
+    return connection.edges.map((e: any) => e.node);
+  };
+  const asset = (raw: any): RewardAsset => {
+    if (!isObject(raw) || typeof raw._id !== "string" || !raw._id ||
+        typeof raw.asset_identifier !== "string" || !raw.asset_identifier) {
+      throw new Error("Malformed reward scope asset");
+    }
+    return {
+      id: raw._id, asset_identifier: raw.asset_identifier,
+      asset_type: typeof raw.asset_type === "string" ? raw.asset_type : null,
+      eligible_for_submission: typeof raw.eligible_for_submission === "boolean" ? raw.eligible_for_submission : null,
+      eligible_for_bounty: typeof raw.eligible_for_bounty === "boolean" ? raw.eligible_for_bounty : null,
+    };
+  };
+
+  try {
+    let team = await request(rewardsQuery);
+    if (team === null) {
+      issue("not_public_or_not_found", "Program was not found or is not publicly accessible");
+      return result;
+    }
+    if (typeof team.handle !== "string" || typeof team.scope_and_rewards_groups_enabled !== "boolean") {
+      throw new Error("Malformed program rewards metadata");
+    }
+    result.handle = team.handle;
+    result.format = team.scope_and_rewards_groups_enabled ? "scope_and_rewards" : "legacy";
+    const sourceCurrency = team.currency;
+    result.currency = typeof team.currency === "string" && team.currency.trim() ? team.currency : null;
+    if (result.currency === null) issue("missing_currency", "Reward currency is unknown");
+    if (team.bounty_table === null) {
+      result.groups = [];
+      issue("no_published_table", "No public bounty table is available");
+      return result;
+    }
+    const tableId = team.bounty_table?._id;
+    if (typeof tableId !== "string" || !tableId) throw new Error("Malformed bounty table");
+    result.description = typeof team.bounty_table.description === "string" ? team.bounty_table.description : null;
+    const cursors = new Set<string>();
+    while (true) {
+      const table = team?.bounty_table;
+      if (table?._id !== tableId || team.handle !== result.handle ||
+          team.scope_and_rewards_groups_enabled !== (result.format === "scope_and_rewards") ||
+          team.currency !== sourceCurrency) {
+        throw new Error("Program rewards changed during pagination");
+      }
+      for (const row of nodes(table.bounty_table_rows)) {
+        if (typeof row._id !== "string" || !row._id || rows.has(row._id)) {
+          throw new Error("Missing or repeated reward group ID");
+        }
+        const useRange = typeof row.use_range === "boolean" ? row.use_range : null;
+        const rewards = {} as RewardGroup["rewards"];
+        let incomplete = useRange === null;
+        for (const severity of ["low", "medium", "high", "critical"] as const) {
+          const amount = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+          let maximum = amount(row[severity]);
+          let minimum = useRange === false ? maximum : amount(row[`${severity}_minimum`]);
+          if (minimum !== null && maximum !== null && minimum > maximum) {
+            minimum = maximum = null;
+          }
+          incomplete ||= minimum === null || maximum === null;
+          rewards[severity] = {
+            label: typeof table[`${severity}_label`] === "string" ? table[`${severity}_label`] : null,
+            minimum, maximum,
+          };
+        }
+        if (incomplete) issue("incomplete_rewards", "Some payout amounts, bounds, or the range setting are unknown or invalid", row._id);
+        groups.push({
+          id: row._id, name: typeof row.name === "string" ? row.name : null,
+          description: typeof row.description === "string" ? row.description : null,
+          scope_kind: result.format === "scope_and_rewards" ? "reward_group" :
+            row.structured_scope === null ? "all_assets" : isObject(row.structured_scope) ? "asset" : null,
+          use_range: useRange, rewards, assets: null, assets_availability: "unavailable",
+        });
+        rows.set(row._id, row);
+      }
+      const after = nextCursor(table.bounty_table_rows, cursors);
+      if (after === null) break;
+      team = await request(rewardsQuery, { after });
+    }
+    if (!groups.length) {
+      result.groups = [];
+      issue("no_published_rewards", "The public bounty table contains no reward rows");
+      return result;
+    }
+  } catch (err: any) {
+    issue("upstream_error", `Could not retrieve every reward group: ${err.message}`);
+    if (!groups.length) return result;
+  }
+  result.groups = groups;
+
+  let allAssets: RewardAsset[] | undefined;
+  for (const group of groups) {
+    try {
+      const assets: RewardAsset[] = [];
+      const seenIds = new Set<string>();
+      const append = (rawAssets: any[]) => {
+        for (const raw of rawAssets) {
+          const item = asset(raw);
+          if (seenIds.has(item.id)) throw new Error("Repeated scope asset during pagination");
+          seenIds.add(item.id);
+          assets.push(item);
+        }
+      };
+      if (group.scope_kind === "reward_group") {
+        const rowId = Number(group.id);
+        if (!/^\d+$/.test(group.id) || !Number.isSafeInteger(rowId) || rowId < 1 || rowId > 2147483647) {
+          throw new Error("Invalid reward group ID for scope search");
+        }
+        let total: number | undefined;
+        while (true) {
+          const team = await request(`query ProgramRewardAssets($handle: String!, $rowId: Int!, $from: Int!) {
+            team(handle: $handle) {
+              structured_scopes_search(bounty_table_row_id: $rowId, from: $from, size: 100,
+                sort: {field: "id", direction: ASC}) {
+                total_count edges { node { ... on StructuredScopeDocument {
+                  _id asset_identifier: identifier asset_type eligible_for_submission eligible_for_bounty
+                } } }
+              }
+            }
+          }`, { rowId, from: assets.length });
+          const page = team?.structured_scopes_search;
+          const batch = nodes(page);
+          if (!Number.isSafeInteger(page.total_count) || page.total_count < 0 ||
+              (total !== undefined && total !== page.total_count)) {
+            throw new Error("Missing or inconsistent reward asset total");
+          }
+          total = page.total_count;
+          append(batch);
+          if (assets.length === total) break;
+          if (!batch.length || assets.length > total!) throw new Error("Incomplete reward asset search");
+        }
+        group.assets = assets;
+      } else if (group.scope_kind === "asset") {
+        group.assets = [asset(rows.get(group.id).structured_scope)];
+      } else if (group.scope_kind === "all_assets") {
+        if (!allAssets) {
+          let after: string | null = null;
+          const cursors = new Set<string>();
+          do {
+            const team = await request(`query ProgramRewardDefaultAssets($handle: String!, $after: String) {
+              team(handle: $handle) {
+                structured_scopes(first: 100, after: $after, archived: false,
+                  eligible_for_submission: true, eligible_for_bounty: true) {
+                  pageInfo { hasNextPage endCursor }
+                  edges { node { ${scopeFields} } }
+                }
+              }
+            }`, { after });
+            const page = team?.structured_scopes;
+            append(nodes(page));
+            after = nextCursor(page, cursors);
+          } while (after !== null);
+          allAssets = assets;
+        }
+        group.assets = allAssets;
+      } else {
+        throw new Error("Legacy reward scope applicability is unknown");
+      }
+      group.assets_availability = group.assets.some((a) =>
+        a.asset_type === null || a.eligible_for_bounty === null || a.eligible_for_submission === null
+      ) ? "partial" : "available";
+      if (group.assets_availability === "partial") issue("incomplete_asset_fields", "Some asset types or eligibility fields are unknown", group.id);
+    } catch (err: any) {
+      issue("assets_unavailable", `Could not retrieve every asset: ${err.message}`, group.id);
+    }
+  }
+  result.availability = result.issues.length ? "partial" : "available";
+  if (result.availability === "available") cacheSet(cacheKey, result);
+  return result;
+}
+
 // ── Get program scope (auto-paginated) ────────────────────────────
 export async function getProgramScope(handle: string, pageSize?: number) {
   const allData = await h1FetchAllPages(

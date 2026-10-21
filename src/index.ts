@@ -11,6 +11,7 @@ import {
   listPrograms,
   getProgramDetails,
   getProgramSignalRequirements,
+  getProgramRewards,
   getProgramScope,
   getProgramWeaknesses,
   getEarnings,
@@ -263,7 +264,32 @@ server.tool(
   }
 );
 
-// ── Tool: analyze_report_patterns ──────────────────────────────────
+// ── Tool: get_program_rewards ─────────────────────────────────────
+server.tool(
+  "get_program_rewards",
+  "Get a public program's published reward groups, currency, Low/Medium/High/Critical payout ranges, and associated scope assets. Supports legacy tables and Scope and rewards groups. Missing values are null, not zero; inspect availability and issues before relying on incomplete data. Legacy asset-specific rows take precedence over all-assets rows for the same asset ID. Private programs are not supported.",
+  {
+    program_handle: z.string().trim().min(1).describe("Public program handle (e.g. 'security', 'tiktok')"),
+  },
+  { readOnlyHint: true },
+  async ({ program_handle }) => {
+    try {
+      const rewards = await getProgramRewards(program_handle);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(rewards, null, 2) }],
+        isError: rewards.availability === "unavailable" &&
+          rewards.issues.some((issue) => issue.code === "upstream_error"),
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: analyze_report_patterns ────────────────────────────────
 server.tool(
   "analyze_report_patterns",
   "Fetch your recent reports and analyze patterns: most common vulnerability types, severity distribution, resolution rates, and programs. Useful for understanding your hunting profile.",
