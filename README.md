@@ -1,42 +1,37 @@
 # HackerOne MCP Server
 
-> **Disclaimer:** This is an unofficial, community-built project. It is not affiliated with, endorsed by, or maintained by HackerOne. "HackerOne" is a trademark of HackerOne, Inc. This project integrates with their publicly documented [Hacker API](https://api.hackerone.com/hacker-resources/) and uses the website's public GraphQL API for program signal requirements.
-
-MCP server that gives Claude Code (or any MCP client) full access to your HackerOne reports, programs, earnings, and scope data via the HackerOne API — including submitting reports and responding to triage.
+Unofficial MCP server that gives Codex, Claude Code, or any MCP client full access to your HackerOne reports, programs, earnings, and scope data via the HackerOne API — including submitting reports and responding to triage.
 
 ## Setup
+
+Install Node.js and npm, then use the published [hackerone-mcp-server package](https://www.npmjs.com/package/hackerone-mcp-server) through `npx`.
 
 ### 1. Get your HackerOne API token
 
 Go to **HackerOne > Settings > API Token** and generate one.
 
-### 2. Install and build
+### 2. Add to your MCP client
 
-```bash
-git clone https://github.com/Sicks3c/hackerone-mcp-server.git
-cd hackerone-mcp-server
-npm install
-npm run build
+Replace `your-username` and `your-api-token` below with your HackerOne credentials.
+
+#### Codex
+
+```toml
+[mcp_servers.hackerone]
+command = "npx"
+args = ["-y", "hackerone-mcp-server@latest"]
+startup_timeout_sec = 60
+env = { "H1_USERNAME" = "your-username", "H1_API_TOKEN" = "your-api-token" }
 ```
 
-### 3. Add to Claude Code
-
-```bash
-claude mcp add hackerone \
-  -e H1_USERNAME=your-username \
-  -e H1_API_TOKEN=your-api-token \
-  -s user \
-  -- node /path/to/hackerone-mcp-server/dist/index.js
-```
-
-Or add manually to `~/.claude.json`:
+#### Claude Code
 
 ```json
 {
   "mcpServers": {
     "hackerone": {
-      "command": "node",
-      "args": ["/path/to/hackerone-mcp-server/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "hackerone-mcp-server@latest"],
       "env": {
         "H1_USERNAME": "your-username",
         "H1_API_TOKEN": "your-api-token"
@@ -46,13 +41,18 @@ Or add manually to `~/.claude.json`:
 }
 ```
 
-### 4. Verify
+## Build from source
+
+For local development:
 
 ```bash
-claude
-> /mcp
-# You should see "hackerone" listed with 17 tools
+git clone https://github.com/11philip22/hackerone-mcp-server.git
+cd hackerone-mcp-server
+npm install
+npm run build
 ```
+
+To use your local build, set the MCP command to `node` and its arguments to `["/absolute/path/to/hackerone-mcp-server/dist/index.js"]`, keeping the same environment variables.
 
 ## Tools
 
@@ -134,17 +134,3 @@ Show my recent bounty earnings and current balance
 ```
 Analyze my report patterns — what severity gets resolved most?
 ```
-
-## How It Works
-
-- Connects to the [HackerOne Hacker API v1](https://api.hackerone.com/hacker-resources/) using your personal API token
-- Runs locally over stdio — your credentials never leave your machine
-- Supports both read and write operations (submit reports, add comments, close reports)
-- Auto-paginates programs, scope, and weakness endpoints so nothing gets silently truncated
-- Uses server-side API filters where available (program, severity, state) for faster searches
-- Built-in retry with exponential backoff for rate limit handling
-- 60-second response cache to reduce redundant API calls
-
-## License
-
-MIT
