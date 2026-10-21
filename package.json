@@ -7,8 +7,12 @@
   "bin": {
     "hackerone-mcp-server": "dist/index.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
+    "prepack": "npm run build",
     "test": "npm run build && node --test test/*.test.mjs",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts"
