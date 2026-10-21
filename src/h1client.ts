@@ -69,6 +69,7 @@ async function h1Fetch(
     }
     try {
       const res = await fetch(url.toString(), {
+        redirect: "error",
         headers: {
           Authorization: `Basic ${getAuth()}`,
           Accept: "application/json",
@@ -149,22 +150,62 @@ function sleep(ms: number): Promise<void> {
 }
 
 // ── Auto-pagination helper ────────────────────────────────────────
+function isObject(value: any): value is Record<string, any> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 async function h1FetchAllPages(
   path: string,
-  extraParams?: Record<string, string>,
-  maxPages = 20
+  limit?: number
 ): Promise<any[]> {
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+    throw new Error("page_size must be a positive integer");
+  }
+  const endpoint = new URL(`${H1_BASE}${path}`);
+  let url = new URL(endpoint);
+  url.searchParams.set("page[size]", String(Math.min(limit ?? 100, 100)));
+  url.searchParams.set("page[number]", "1");
+  const visited = new Set<string>();
   const all: any[] = [];
-  for (let page = 1; page <= maxPages; page++) {
-    const params: Record<string, string> = {
-      "page[size]": "100",
-      "page[number]": String(page),
-      ...extraParams,
-    };
-    const data = await h1Fetch(path, params);
-    if (!data.data || data.data.length === 0) break;
-    all.push(...data.data);
-    if (data.data.length < 100) break; // last page
+  while (true) {
+    url.searchParams.sort();
+    if (visited.has(url.href)) {
+      throw new Error(`Repeated HackerOne pagination link for ${path}`);
+    }
+    visited.add(url.href);
+    const page = await h1Fetch(url.href.slice(H1_BASE.length));
+    if (
+      !isObject(page) || !Array.isArray(page.data) ||
+      page.data.some((item: any) =>
+        !isObject(item) || typeof item.id !== "string" ||
+        typeof item.type !== "string" || !isObject(item.attributes)
+      ) ||
+      (page.links !== undefined && !isObject(page.links))
+    ) {
+      throw new Error(`Malformed HackerOne page for ${path}: expected a data array of resources and optional links object`);
+    }
+    const next = page.links?.next;
+    let nextUrl: URL | undefined;
+    if (next !== undefined && next !== null) {
+      if (typeof next !== "string" || !next.trim()) {
+        throw new Error(`Malformed HackerOne pagination link for ${path}`);
+      }
+      try {
+        nextUrl = new URL(next, url);
+      } catch {
+        throw new Error(`Malformed HackerOne pagination link for ${path}`);
+      }
+      if (
+        nextUrl.protocol !== "https:" || nextUrl.origin !== endpoint.origin ||
+        nextUrl.pathname !== endpoint.pathname || nextUrl.username ||
+        nextUrl.password || nextUrl.hash
+      ) {
+        throw new Error(`HackerOne pagination link leaves the original HTTPS API endpoint for ${path}`);
+      }
+    }
+    all.push(...page.data.slice(0, limit === undefined ? undefined : limit - all.length));
+    if (all.length === limit || !nextUrl) break;
+    url = nextUrl;
   }
   return all;
 }
@@ -420,10 +461,10 @@ export async function getReportActivities(
 }
 
 // ── List programs (auto-paginated) ────────────────────────────────
-export async function listPrograms(pageSize = 50) {
-  const allData = await h1FetchAllPages("/hackers/programs");
+export async function listPrograms(pageSize?: number) {
+  const allData = await h1FetchAllPages("/hackers/programs", pageSize);
 
-  const programs = allData.map((p: any) => ({
+  return allData.map((p: any) => ({
     id: p.id,
     handle: p.attributes.handle,
     name: p.attributes.name,
@@ -432,18 +473,18 @@ export async function listPrograms(pageSize = 50) {
     started_accepting_at: p.attributes.started_accepting_at,
     submission_state: p.attributes.submission_state,
   }));
-
-  // If caller requested a specific size, respect it
-  if (pageSize && pageSize < programs.length) {
-    return programs.slice(0, pageSize);
-  }
-  return programs;
 }
 
 // ── Get program details ───────────────────────────────────────────
 export async function getProgramDetails(handle: string) {
   const data = await h1Fetch(`/hackers/programs/${handle}`);
-  const p = data.data;
+  const p = isObject(data) && "data" in data ? data.data : data;
+  if (
+    !isObject(p) || p.type !== "program" || typeof p.id !== "string" ||
+    !isObject(p.attributes) || typeof p.attributes.handle !== "string"
+  ) {
+    throw new Error(`Malformed HackerOne program response for ${handle}: expected a program resource with id and attributes.handle`);
+  }
   const attrs = p.attributes;
 
   return {
@@ -456,23 +497,23 @@ export async function getProgramDetails(handle: string) {
     submission_state: attrs.submission_state,
     started_accepting_at: attrs.started_accepting_at,
     policy: attrs.policy,
-    response_efficiency_percentage: attrs.response_efficiency_percentage,
+    response_efficiency_percentage: attrs.response_efficiency_percentage ?? null,
     average_time_to_first_program_response:
-      attrs.average_time_to_first_program_response,
-    average_time_to_report_resolved: attrs.average_time_to_report_resolved,
-    average_time_to_bounty_awarded: attrs.average_time_to_bounty_awarded,
-    allow_bounty_splitting: attrs.allow_bounty_splitting,
+      attrs.average_time_to_first_program_response ?? null,
+    average_time_to_report_resolved: attrs.average_time_to_report_resolved ?? null,
+    average_time_to_bounty_awarded: attrs.average_time_to_bounty_awarded ?? null,
+    allow_bounty_splitting: attrs.allows_bounty_splitting ?? null,
     bookmarked: attrs.bookmarked,
   };
 }
 
 // ── Get program scope (auto-paginated) ────────────────────────────
-export async function getProgramScope(handle: string, pageSize = 100) {
+export async function getProgramScope(handle: string, pageSize?: number) {
   const allData = await h1FetchAllPages(
-    `/hackers/programs/${handle}/structured_scopes`
+    `/hackers/programs/${handle}/structured_scopes`, pageSize
   );
 
-  const scopes = allData.map((s: any) => ({
+  return allData.map((s: any) => ({
     id: s.id,
     asset_type: s.attributes.asset_type,
     asset_identifier: s.attributes.asset_identifier,
@@ -482,30 +523,20 @@ export async function getProgramScope(handle: string, pageSize = 100) {
     max_severity: s.attributes.max_severity,
     created_at: s.attributes.created_at,
   }));
-
-  if (pageSize && pageSize < scopes.length) {
-    return scopes.slice(0, pageSize);
-  }
-  return scopes;
 }
 
 // ── Get program weaknesses (auto-paginated) ───────────────────────
-export async function getProgramWeaknesses(handle: string, pageSize = 100) {
+export async function getProgramWeaknesses(handle: string, pageSize?: number) {
   const allData = await h1FetchAllPages(
-    `/hackers/programs/${handle}/weaknesses`
+    `/hackers/programs/${handle}/weaknesses`, pageSize
   );
 
-  const weaknesses = allData.map((w: any) => ({
+  return allData.map((w: any) => ({
     id: w.id,
     name: w.attributes.name,
     description: w.attributes.description,
     external_id: w.attributes.external_id,
   }));
-
-  if (pageSize && pageSize < weaknesses.length) {
-    return weaknesses.slice(0, pageSize);
-  }
-  return weaknesses;
 }
 
 // ── Get earnings ──────────────────────────────────────────────────
@@ -527,21 +558,32 @@ export async function getEarnings(pageSize = 100) {
 
 // ── Get hacker profile ────────────────────────────────────────────
 export async function getHackerProfile() {
-  const data = await h1Fetch("/hackers/me");
-  const u = data.data;
-  const attrs = u.attributes;
+  const reports = await h1FetchAllPages("/hackers/me/reports");
+  const u = reports
+    .map((report) => report.relationships?.reporter?.data)
+    .find((reporter) =>
+      isObject(reporter) && reporter.type === "user" &&
+      isObject(reporter.attributes) &&
+      typeof reporter.attributes.username === "string" &&
+      reporter.attributes.username === process.env.H1_USERNAME
+    );
+  const attrs = u?.attributes;
 
   return {
-    id: u.id,
-    username: attrs.username,
-    name: attrs.name,
-    bio: attrs.bio,
-    reputation: attrs.reputation,
-    signal: attrs.signal,
-    impact: attrs.impact,
-    rank: attrs.rank,
-    created_at: attrs.created_at,
-    hackerone_triager: attrs.hackerone_triager,
+    id: u?.id ?? null,
+    username: attrs?.username ?? null,
+    name: attrs?.name ?? null,
+    bio: attrs?.bio ?? null,
+    reputation: attrs?.reputation ?? null,
+    signal: attrs?.signal ?? null,
+    impact: attrs?.impact ?? null,
+    rank: attrs?.rank ?? null,
+    created_at: attrs?.created_at ?? null,
+    hackerone_triager: attrs?.hackerone_triager ?? null,
+    source: "/hackers/me/reports reporter relationship",
+    unavailable_reason: u ? null : reports.length === 0
+      ? "No reports available; profile data and statistics are unavailable."
+      : "No reporter username matches H1_USERNAME; an API identifier may differ from the account username.",
   };
 }
 

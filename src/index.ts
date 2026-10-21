@@ -182,7 +182,7 @@ server.tool(
 // ── Tool: list_programs ────────────────────────────────────────────
 server.tool(
   "list_programs",
-  "List bug bounty programs you have access to on HackerOne. Auto-paginates to return all programs.",
+  "List bug bounty programs you have access to on HackerOne. Follows all pages by default; page_size optionally limits the total results. Fails if pagination is malformed or incomplete.",
   {
     page_size: z
       .number()
@@ -214,7 +214,7 @@ server.tool(
 // ── Tool: get_program_details ──────────────────────────────────────
 server.tool(
   "get_program_details",
-  "Get detailed info about a single program: policy, response times, metrics, bounty splitting, and submission state.",
+  "Get detailed info about a single program: policy, response times, metrics, bounty splitting, and submission state. Unavailable metrics are null.",
   {
     program_handle: z
       .string()
@@ -309,7 +309,7 @@ server.tool(
 // ── Tool: get_program_scope ──────────────────────────────────────
 server.tool(
   "get_program_scope",
-  "Get the in-scope assets for a bug bounty program. Auto-paginates to return all scope items. Returns asset types, identifiers, bounty eligibility, and severity caps.",
+  "Get the scope assets for a bug bounty program. Follows all pages by default; page_size optionally limits the total results. Returns asset types, identifiers, submission and bounty eligibility, and severity caps. Pagination failures return an error.",
   {
     program_handle: z
       .string()
@@ -344,7 +344,7 @@ server.tool(
 // ── Tool: get_program_weaknesses ────────────────────────────────
 server.tool(
   "get_program_weaknesses",
-  "Get the accepted vulnerability/weakness types for a program. Auto-paginates. Helps frame reports using the right CWE categories the program cares about.",
+  "Get the accepted vulnerability/weakness types for a program. Follows all pages by default; page_size optionally limits the total results. Pagination failures return an error. Helps select the program's accepted CWE categories.",
   {
     program_handle: z
       .string()
@@ -411,7 +411,7 @@ server.tool(
 // ── Tool: get_hacker_profile ──────────────────────────────────────
 server.tool(
   "get_hacker_profile",
-  "Get your HackerOne hacker profile: reputation, signal, impact, rank, and account info.",
+  "Get profile data from a report's reporter relationship only when its username matches H1_USERNAME. Missing fields are null. Returns source and unavailable_reason; no reports or no matching reporter means profile data is unavailable. An API identifier is not necessarily an account username.",
   {},
   async () => {
     try {
