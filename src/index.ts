@@ -10,6 +10,7 @@ import {
   getReportSummary,
   listPrograms,
   getProgramDetails,
+  getProgramSignalRequirements,
   getProgramScope,
   getProgramWeaknesses,
   getEarnings,
@@ -214,7 +215,7 @@ server.tool(
 // ── Tool: get_program_details ──────────────────────────────────────
 server.tool(
   "get_program_details",
-  "Get detailed info about a single program: policy, response times, metrics, bounty splitting, and submission state. Unavailable metrics are null.",
+  "Get detailed info about a single program: policy, response times, metrics, bounty splitting, and submission state. Unavailable metrics are null. Use get_program_signal_requirements for its minimum signal threshold.",
   {
     program_handle: z
       .string()
@@ -230,6 +231,28 @@ server.tool(
             text: JSON.stringify(details, null, 2),
           },
         ],
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: get_program_signal_requirements ─────────────────────────
+server.tool(
+  "get_program_signal_requirements",
+  "Get a public program's minimum past-year signal requirement from HackerOne's website. Returns signal_requirement and signal_requirement_enabled: false means disabled; null means unavailable. Zero is a valid threshold. Does not determine your eligibility or remaining trial reports. Private programs are not supported.",
+  {
+    program_handle: z.string().trim().min(1).describe("Public program handle (e.g. 'uber', 'security')"),
+  },
+  async ({ program_handle }) => {
+    try {
+      const requirements = await getProgramSignalRequirements(program_handle);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(requirements, null, 2) }],
       };
     } catch (err: any) {
       return {

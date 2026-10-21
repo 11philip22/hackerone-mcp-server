@@ -1,6 +1,6 @@
 # HackerOne MCP Server
 
-> **Disclaimer:** This is an unofficial, community-built project. It is not affiliated with, endorsed by, or maintained by HackerOne. "HackerOne" is a trademark of HackerOne, Inc. This project simply integrates with their publicly documented [Hacker API](https://api.hackerone.com/hacker-resources/).
+> **Disclaimer:** This is an unofficial, community-built project. It is not affiliated with, endorsed by, or maintained by HackerOne. "HackerOne" is a trademark of HackerOne, Inc. This project integrates with their publicly documented [Hacker API](https://api.hackerone.com/hacker-resources/) and uses the website's public GraphQL API for program signal requirements.
 
 MCP server that gives Claude Code (or any MCP client) full access to your HackerOne reports, programs, earnings, and scope data via the HackerOne API — including submitting reports and responding to triage.
 
@@ -51,7 +51,7 @@ Or add manually to `~/.claude.json`:
 ```bash
 claude
 > /mcp
-# You should see "hackerone" listed with 16 tools
+# You should see "hackerone" listed with 17 tools
 ```
 
 ## Tools
@@ -66,6 +66,7 @@ claude
 | `get_report_activities` | Get activity timeline (comments, state changes, bounties) |
 | `list_programs` | List all bug bounty programs you have access to (auto-paginates) |
 | `get_program_details` | Get single program info: policy, response times, metrics |
+| `get_program_signal_requirements` | Get a public program's minimum past-year signal threshold and whether requirements are enabled |
 | `get_program_scope` | Get all in-scope assets for a program (auto-paginates) |
 | `get_program_weaknesses` | Get accepted CWE/weakness types for a program (auto-paginates) |
 | `get_earnings` | Get your bounty earnings history (amounts, dates, programs) |
@@ -117,6 +118,11 @@ Show me the uber program details — what are their response times?
 **Check your stats:**
 ```
 Show my hacker profile — what's my current reputation and signal?
+```
+
+**Check a program's signal requirement:**
+```
+What signal do I need to submit reports to the uber program?
 ```
 
 **Track earnings:**

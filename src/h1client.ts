@@ -507,6 +507,65 @@ export async function getProgramDetails(handle: string) {
   };
 }
 
+// ── Get public program signal requirements ────────────────────────
+export async function getProgramSignalRequirements(handle: string) {
+  handle = handle.trim();
+  if (!handle) throw new Error("program_handle must not be empty");
+  const cacheKey = `program-signal-requirements:${handle}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  // shortcut: uses the public website API; switch when the Hacker API exposes this field.
+  const source = "https://hackerone.com/graphql";
+  const res = await fetch(source, {
+    method: "POST",
+    redirect: "error",
+    signal: AbortSignal.timeout(15_000),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query: `query ProgramSignalRequirements($handle: String!) {
+        team(handle: $handle) {
+          handle
+          signal_requirements_setting { target_signal }
+        }
+      }`,
+      variables: { handle },
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`HackerOne GraphQL HTTP error ${res.status}: ${await res.text()}`);
+  }
+  const data: any = await res.json();
+  if (data?.errors && (!Array.isArray(data.errors) || data.errors.length > 0)) {
+    throw new Error(`HackerOne GraphQL error: ${JSON.stringify(data.errors)}`);
+  }
+  const team = data?.data?.team;
+  if (team === null) {
+    throw new Error(`Program ${handle} was not found or is not publicly accessible; signal requirements are unavailable`);
+  }
+  const setting = team?.signal_requirements_setting;
+  if (
+    !isObject(team) || typeof team.handle !== "string" ||
+    (setting !== null && (
+      !isObject(setting) ||
+      (setting.target_signal !== null && (
+        typeof setting.target_signal !== "number" || !Number.isFinite(setting.target_signal)
+      ))
+    ))
+  ) {
+    throw new Error(`Malformed HackerOne signal requirements response for ${handle}`);
+  }
+  const target = setting?.target_signal ?? null;
+  const result = {
+    handle: team.handle,
+    signal_requirement: target === -10 ? null : target,
+    signal_requirement_enabled: target === null ? null : target !== -10,
+    source,
+  };
+  cacheSet(cacheKey, result);
+  return result;
+}
+
 // ── Get program scope (auto-paginated) ────────────────────────────
 export async function getProgramScope(handle: string, pageSize?: number) {
   const allData = await h1FetchAllPages(
